@@ -1,2 +1,2 @@
-chatapp-frontend/node_modules/
-chatapp-server/node_modules/
+chatapp-frontend/node_modules/*
+chatapp-server/node_modules/*
