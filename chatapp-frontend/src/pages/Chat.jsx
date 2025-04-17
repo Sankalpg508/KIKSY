@@ -6,11 +6,14 @@ import React, {
   useState,
 } from "react";
 import AppLayout from "../components/layout/AppLayout";
-import { IconButton, Skeleton, Stack, Typography } from "@mui/material";
+import { IconButton, Skeleton, Stack, Typography, Menu, MenuItem, Divider, Paper } from "@mui/material";
 import { palette } from "../constants/color"; // Import color palette
 import {
   AttachFile as AttachFileIcon,
   Send as SendIcon,
+  Search as SearchIcon,
+  Reply as ReplyIcon,
+  Close as CloseIcon,
 } from "@mui/icons-material";
 import { InputBox } from "../components/styles/StyledComponents";
 import FileMenu from "../components/dialogs/FileMenu";
@@ -40,12 +43,14 @@ import { removeNewMessagesAlert } from "../redux/reducers/chat";
 import { TypingLoader } from "../components/layout/Loaders";
 import { useNavigate } from "react-router-dom";
 import { motion, AnimatePresence } from "framer-motion";
+import SearchBar from "../components/shared/SearchBar";
 
-// Utility function to safely format dates
+
+
 const getFormattedTime = (dateString) => {
   try {
     const date = new Date(dateString);
-    // Check if date is valid
+    
     if (isNaN(date.getTime())) {
       return "Just now";
     }
@@ -63,8 +68,27 @@ const getFormattedTime = (dateString) => {
 // Updated EnhancedMessageComponent with improved attachment handling
 // Updated EnhancedMessageComponent with improved attachment handling
 // Updated EnhancedMessageComponent with fixed attachment alignment
-const EnhancedMessageComponent = ({ message, user }) => {
+const EnhancedMessageComponent = ({ message, user, onReply }) => {
   const isMyMessage = message.sender?._id === user?._id;
+  const [contextMenu, setContextMenu] = useState(null);
+  
+  const handleContextMenu = (event) => {
+    event.preventDefault();
+    setContextMenu(
+      contextMenu === null
+        ? { mouseX: event.clientX, mouseY: event.clientY }
+        : null,
+    );
+  };
+
+  const handleClose = () => {
+    setContextMenu(null);
+  };
+
+  const handleReplyClick = () => {
+    onReply(message);
+    handleClose();
+  };
   
   // Function to render appropriate attachment based on type
   const renderAttachment = (attachment) => {
@@ -254,11 +278,51 @@ const EnhancedMessageComponent = ({ message, user }) => {
     }
   };
   
+  // Display the reply reference if this message is a reply
+  const replyContent = message.replyTo && (
+    <Paper 
+      elevation={0}
+      sx={{
+        backgroundColor: isMyMessage 
+          ? `${palette.navy}40` 
+          : `${palette.navy}20`,
+        padding: "8px 12px",
+        borderRadius: "8px",
+        marginBottom: "8px",
+        borderLeft: `3px solid ${isMyMessage ? palette.cream : palette.navy}`,
+      }}
+    >
+      <Typography 
+        variant="caption" 
+        sx={{ 
+          fontWeight: "bold", 
+          color: isMyMessage ? palette.cream : palette.navy 
+        }}
+      >
+        {message.replyTo.sender?.name || "Unknown"}
+      </Typography>
+      <Typography 
+        variant="body2" 
+        sx={{ 
+          fontSize: "0.8rem", 
+          color: isMyMessage ? "rgba(255,255,255,0.8)" : palette.navy,
+          whiteSpace: "nowrap",
+          overflow: "hidden",
+          textOverflow: "ellipsis",
+          maxWidth: "200px"
+        }}
+      >
+        {message.replyTo.content || (message.replyTo.attachments?.length > 0 ? "[Attachment]" : "")}
+      </Typography>
+    </Paper>
+  );
+  
   return (
     <Stack
       direction="row"
       justifyContent={isMyMessage ? "flex-end" : "flex-start"}
       width="100%"
+      onContextMenu={handleContextMenu}
     >
       <Stack
         sx={{
@@ -284,6 +348,9 @@ const EnhancedMessageComponent = ({ message, user }) => {
             {message.sender?.name}
           </Typography>
         )}
+        
+        {/* Display the reply reference if this message is a reply */}
+        {replyContent}
         
         {/* Show message content if it exists */}
         {message.content && (
@@ -313,6 +380,23 @@ const EnhancedMessageComponent = ({ message, user }) => {
           {getFormattedTime(message.createdAt)}
         </Typography>
       </Stack>
+      
+      {/* Context Menu for Reply */}
+      <Menu
+        open={contextMenu !== null}
+        onClose={handleClose}
+        anchorReference="anchorPosition"
+        anchorPosition={
+          contextMenu !== null
+            ? { top: contextMenu.mouseY, left: contextMenu.mouseX }
+            : undefined
+        }
+      >
+        <MenuItem onClick={handleReplyClick}>
+          <ReplyIcon fontSize="small" sx={{ mr: 1 }} />
+          Reply
+        </MenuItem>
+      </Menu>
     </Stack>
   );
 };
@@ -344,12 +428,17 @@ const getFileSize = (bytes) => {
 };
 
 const Chat = ({ chatId, user }) => {
+  const [filteredMessages, setFilteredMessages] = useState([]);
+  const [isSearching, setIsSearching] = useState(false);
+  const [isSearchBarVisible, setIsSearchBarVisible] = useState(false);
+  const [replyingTo, setReplyingTo] = useState(null);
   const socket = getSocket();
   const dispatch = useDispatch();
   const navigate = useNavigate();
 
   const containerRef = useRef(null);
   const bottomRef = useRef(null);
+  const prevScrollPos = useRef(0);
 
   const [message, setMessage] = useState("");
   const [messages, setMessages] = useState([]);
@@ -379,7 +468,20 @@ const Chat = ({ chatId, user }) => {
   ];
 
   const members = chatDetails?.data?.chat?.members;
-
+  const handleSearchMessages = (query) => {
+    if (!query.trim()) {
+      setIsSearching(false);
+      return;
+    }
+    
+    setIsSearching(true);
+    const filtered = allMessages.filter(message => 
+      message.content && 
+      message.content.toLowerCase().includes(query.toLowerCase())
+    );
+    setFilteredMessages(filtered);
+  };
+  
   const messageOnChange = (e) => {
     setMessage(e.target.value);
 
@@ -401,6 +503,41 @@ const Chat = ({ chatId, user }) => {
     setFileMenuAnchor(e.currentTarget);
   };
 
+  const handleScroll = useCallback(() => {
+    if (containerRef.current) {
+      const { scrollTop } = containerRef.current;
+      
+      // If scrolling up and beyond a threshold, show search bar
+      if (prevScrollPos.current > scrollTop && scrollTop < 100) {
+        setIsSearchBarVisible(true);
+      } 
+      // If scrolling down significantly, hide search bar
+      else if (prevScrollPos.current < scrollTop && scrollTop > 200) {
+        setIsSearchBarVisible(false);
+      }
+      
+      prevScrollPos.current = scrollTop;
+    }
+  }, []);
+
+  useEffect(() => {
+    const container = containerRef.current;
+    if (container) {
+      container.addEventListener('scroll', handleScroll);
+      return () => {
+        container.removeEventListener('scroll', handleScroll);
+      };
+    }
+  }, [handleScroll]);
+
+  const handleReply = (message) => {
+    setReplyingTo(message);
+  };
+
+  const cancelReply = () => {
+    setReplyingTo(null);
+  };
+
   const submitHandler = (e) => {
     e.preventDefault();
 
@@ -413,13 +550,20 @@ const Chat = ({ chatId, user }) => {
         name: user.name
       },
       chat: chatId,
-      createdAt: new Date().toISOString()
+      createdAt: new Date().toISOString(),
+      replyTo: replyingTo
     };
     setMessages(prev => [...prev, newMessage]);
 
-    // Emitting the message to the server
-    socket.emit(NEW_MESSAGE, { chatId, members, message });
+    socket.emit(NEW_MESSAGE, { 
+      chatId, 
+      members, 
+      message,
+      replyToId: replyingTo?._id
+    });
+    
     setMessage("");
+    setReplyingTo(null);
   };
 
   useEffect(() => {
@@ -662,6 +806,14 @@ const Chat = ({ chatId, user }) => {
     }
   };
 
+  const toggleSearchBar = () => {
+    setIsSearchBarVisible(prev => !prev);
+    if (isSearching) {
+      setIsSearching(false);
+      setFilteredMessages([]);
+    }
+  };
+
   return chatDetails.isLoading ? (
     <motion.div
       initial={{ opacity: 0 }}
@@ -697,7 +849,7 @@ const Chat = ({ chatId, user }) => {
           variants={messageContainerVariants}
           initial="hidden"
           animate="visible"
-          style={{ height: "90%" }}
+          style={{ height: replyingTo ? "80%" : isSearchBarVisible ? "85%" : "90%" }}
         >
           <Stack
             ref={containerRef}
@@ -725,19 +877,72 @@ const Chat = ({ chatId, user }) => {
               }
             }}
           >
-            <AnimatePresence mode="sync">
-              {allMessages.map((message, index) => (
-                <motion.div
-                  key={message._id || index}
-                  variants={messageItemVariants}
-                  initial="hidden"
-                  animate="visible"
-                  exit={{ opacity: 0, y: -20, transition: { duration: 0.2 } }}
+            {/* Search button and search bar */}
+            <Stack direction="row" justifyContent="flex-end" alignItems="center" mb={1}>
+              <motion.div
+                whileHover={{ scale: 1.1 }}
+                whileTap={{ scale: 0.9 }}
+              >
+                <IconButton 
+                  onClick={toggleSearchBar}
+                  sx={{ 
+                    color: "white",
+                    backgroundColor: `${palette.navy}50`,
+                    "&:hover": {
+                      backgroundColor: palette.navy
+                    }
+                  }}
                 >
-                  <EnhancedMessageComponent message={message} user={user} />
+                  <SearchIcon />
+                </IconButton>
+              </motion.div>
+            </Stack>
+            
+            <AnimatePresence>
+              {isSearchBarVisible && (
+                <motion.div
+                  initial={{ opacity: 0, height: 0 }}
+                  animate={{ opacity: 1, height: "auto" }}
+                  exit={{ opacity: 0, height: 0 }}
+                  transition={{ duration: 0.3 }}
+                  style={{ marginBottom: "8px" }}
+                >
+                  <SearchBar 
+                    placeholder="Search messages..." 
+                    onSearch={handleSearchMessages}
+                    sx={{ 
+                      padding: "0",
+                      "& .MuiOutlinedInput-root": {
+                        backgroundColor: "rgba(255, 255, 255, 0.9)",
+                      }
+                    }}
+                  />
                 </motion.div>
-              ))}
+              )}
             </AnimatePresence>
+           
+           <AnimatePresence mode="sync">
+            {(isSearching ? filteredMessages : allMessages).map((message, index) => (
+              <motion.div
+                key={message._id || index}
+                variants={messageItemVariants}
+                initial="hidden"
+                animate="visible"
+                exit={{ opacity: 0, y: -20, transition: { duration: 0.2 } }}
+              >
+                <EnhancedMessageComponent message={message} user={user} onReply={handleReply} />
+              </motion.div>
+            ))}
+           </AnimatePresence>
+            
+            {isSearching && filteredMessages.length === 0 && (
+            <Typography 
+              variant="body1" 
+              sx={{ textAlign: 'center', color: palette.cream, mt: 2 }}
+            >
+              No messages matching your search
+            </Typography>
+          )}
 
             <AnimatePresence>
               {userTyping && (
@@ -766,6 +971,57 @@ const Chat = ({ chatId, user }) => {
             <div ref={bottomRef} />
           </Stack>
         </motion.div>
+
+        {/* Reply preview component */}
+        <AnimatePresence>
+          {replyingTo && (
+            <motion.div
+              initial={{ opacity: 0, height: 0 }}
+              animate={{ opacity: 1, height: "auto" }}
+              exit={{ opacity: 0, height: 0 }}
+              transition={{ duration: 0.3 }}
+            >
+              <Stack 
+                direction="row"
+                justifyContent="space-between"
+                alignItems="center"
+                sx={{
+                  backgroundColor: `${palette.navy}80`,
+                  padding: "0.5rem 1rem",
+                  borderRadius: "8px 8px 0 0",
+                }}
+              >
+                <Stack direction="row" alignItems="center" spacing={1}>
+                  <ReplyIcon sx={{ color: palette.cream }} />
+                  <Stack>
+                    <Typography 
+                      variant="caption" 
+                      sx={{ fontWeight: "bold", color: palette.cream }}
+                    >
+                      Replying to {replyingTo.sender?.name || "message"}
+                    </Typography>
+                    <Typography 
+                      variant="body2" 
+                      sx={{ 
+                        color: "rgba(255,255,255,0.8)",
+                        fontSize: "0.8rem",
+                        whiteSpace: "nowrap",
+                        overflow: "hidden",
+                        textOverflow: "ellipsis",
+                        maxWidth: "250px"
+                      }}
+                    >
+                      {replyingTo.content || (replyingTo.attachments?.length > 0 ? "[Attachment]" : "")}
+                    </Typography>
+                  </Stack>
+                </Stack>
+                <IconButton size="small" onClick={cancelReply} sx={{ color: palette.cream }}>
+                  <CloseIcon fontSize="small" />
+                </IconButton>
+              </Stack>
+            </motion.div>
+          )}
+        </AnimatePresence>
 
         <motion.form
           style={{
