@@ -6,7 +6,7 @@ import React, {
   useState,
 } from "react";
 import AppLayout from "../components/layout/AppLayout";
-import { IconButton, Skeleton, Stack, Typography, Menu, MenuItem, Divider, Paper } from "@mui/material";
+import { IconButton, Skeleton, Stack, Typography, Menu, MenuItem, Divider, Paper, Box } from "@mui/material";
 import { palette } from "../constants/color"; // Import color palette
 import {
   AttachFile as AttachFileIcon,
@@ -507,18 +507,26 @@ const Chat = ({ chatId, user }) => {
     if (containerRef.current) {
       const { scrollTop } = containerRef.current;
       
-      // If scrolling up and beyond a threshold, show search bar
-      if (prevScrollPos.current > scrollTop && scrollTop < 100) {
+      // Show search bar with ANY scroll movement, not just at top
+      if (Math.abs(scrollTop - prevScrollPos.current) > 5) {
         setIsSearchBarVisible(true);
-      } 
-      // If scrolling down significantly, hide search bar
-      else if (prevScrollPos.current < scrollTop && scrollTop > 200) {
-        setIsSearchBarVisible(false);
+        
+        // Hide search bar after 3 seconds of no scrolling
+        if (window.scrollHideTimeout) {
+          clearTimeout(window.scrollHideTimeout);
+        }
+        
+        window.scrollHideTimeout = setTimeout(() => {
+          // Only hide if not actively searching
+          if (!isSearching) {
+            setIsSearchBarVisible(false);
+          }
+        }, 3000);
       }
       
       prevScrollPos.current = scrollTop;
     }
-  }, []);
+  }, [isSearching]);
 
   useEffect(() => {
     const container = containerRef.current;
@@ -529,6 +537,14 @@ const Chat = ({ chatId, user }) => {
       };
     }
   }, [handleScroll]);
+
+  useEffect(() => {
+    return () => {
+      if (window.scrollHideTimeout) {
+        clearTimeout(window.scrollHideTimeout);
+      }
+    };
+  }, []);
 
   const handleReply = (message) => {
     setReplyingTo(message);
@@ -542,6 +558,8 @@ const Chat = ({ chatId, user }) => {
     e.preventDefault();
 
     if (!message.trim()) return;
+    
+    // Create new message with complete reply data
     const newMessage = {
       _id: tempId,
       content: message,
@@ -551,15 +569,28 @@ const Chat = ({ chatId, user }) => {
       },
       chat: chatId,
       createdAt: new Date().toISOString(),
-      replyTo: replyingTo
+      // Store complete reply data
+      replyTo: replyingTo ? {
+        _id: replyingTo._id, 
+        content: replyingTo.content,
+        sender: {
+          _id: replyingTo.sender?._id,
+          name: replyingTo.sender?.name
+        }
+      } : null
     };
+    
     setMessages(prev => [...prev, newMessage]);
 
+    // Emitting the message with complete reply data
     socket.emit(NEW_MESSAGE, { 
       chatId, 
       members, 
       message,
-      replyToId: replyingTo?._id
+      replyToId: replyingTo?._id,
+      replyToContent: replyingTo?.content,
+      replyToSender: replyingTo?.sender?.name,
+      replyToSenderId: replyingTo?.sender?._id
     });
     
     setMessage("");
@@ -591,16 +622,28 @@ const Chat = ({ chatId, user }) => {
   const newMessagesListener = useCallback(
     (data) => {
       if (data.chatId !== chatId) return;
-  
+
       if (data.message) {
         // Ensure createdAt is valid
         if (!data.message.createdAt) {
           data.message.createdAt = new Date().toISOString();
         }
         
+        // Reconstruct reply data if needed
+        if (data.replyToId && !data.message.replyTo) {
+          data.message.replyTo = {
+            _id: data.replyToId,
+            content: data.replyToContent || "",
+            sender: {
+              _id: data.replyToSenderId || "",
+              name: data.replyToSender || "Unknown"
+            }
+          };
+        }
+        
         // Only add if message doesn't exist in state already
         setMessages((prev) => {
-          // Check if we already have this message (by server ID or matching content/time)
+          // Check if we already have this message
           const exists = prev.some(
             msg => 
               (msg._id === data.message._id) || 
@@ -807,12 +850,47 @@ const Chat = ({ chatId, user }) => {
   };
 
   const toggleSearchBar = () => {
-    setIsSearchBarVisible(prev => !prev);
+    setIsSearching(prev => !prev);
+    
     if (isSearching) {
-      setIsSearching(false);
       setFilteredMessages([]);
     }
+    
+    console.log("Search toggled, isSearching:", !isSearching);
   };
+
+  // Process messages when loading from server
+  useEffect(() => {
+    if (oldMessagesChunk.data?.messages) {
+      // Process messages to ensure reply data is properly formatted
+      const processedMessages = oldMessagesChunk.data.messages.map(msg => {
+        // If the message has replyToId but not replyTo structure, try to reconstruct
+        if (msg.replyToId && !msg.replyTo) {
+          // Try to find the original message
+          const originalMessage = oldMessagesChunk.data.messages.find(m => m._id === msg.replyToId);
+          if (originalMessage) {
+            msg.replyTo = {
+              _id: originalMessage._id,
+              content: originalMessage.content || "",
+              sender: {
+                _id: originalMessage.sender?._id || "",
+                name: originalMessage.sender?.name || "Unknown"
+              }
+            };
+          }
+        }
+        return msg;
+      });
+      
+      setOldMessages(processedMessages);
+    }
+  }, [oldMessagesChunk.data?.messages]);
+
+  // Always show the search button, don't rely on scroll events
+  useEffect(() => {
+    // Force search button to be visible
+    setIsSearchBarVisible(true);
+  }, []);
 
   return chatDetails.isLoading ? (
     <motion.div
@@ -849,7 +927,7 @@ const Chat = ({ chatId, user }) => {
           variants={messageContainerVariants}
           initial="hidden"
           animate="visible"
-          style={{ height: replyingTo ? "80%" : isSearchBarVisible ? "85%" : "90%" }}
+          style={{ height: replyingTo ? "80%" : "90%" }}
         >
           <Stack
             ref={containerRef}
@@ -874,75 +952,83 @@ const Chat = ({ chatId, user }) => {
               "&::-webkit-scrollbar-thumb": {
                 backgroundColor: palette.navy,
                 borderRadius: "20px",
-              }
+              },
+              position: "relative" // Need position relative for absolute positioning
             }}
           >
-            {/* Search button and search bar */}
-            <Stack direction="row" justifyContent="flex-end" alignItems="center" mb={1}>
-              <motion.div
-                whileHover={{ scale: 1.1 }}
-                whileTap={{ scale: 0.9 }}
-              >
-                <IconButton 
-                  onClick={toggleSearchBar}
-                  sx={{ 
-                    color: "white",
-                    backgroundColor: `${palette.navy}50`,
-                    "&:hover": {
-                      backgroundColor: palette.navy
-                    }
-                  }}
-                >
-                  <SearchIcon />
-                </IconButton>
-              </motion.div>
-            </Stack>
-            
-            <AnimatePresence>
-              {isSearchBarVisible && (
+            {/* Fixed search button - always visible */}
+            <div
+              style={{
+                position: "sticky",
+                top: "15px",
+                zIndex: 999,
+                display: "flex",
+                justifyContent: "flex-end",
+                pointerEvents: "none",
+                marginBottom: "-40px", // Prevent taking up space in the layout
+              }}
+            >
+              <div style={{ pointerEvents: "auto" }}>
                 <motion.div
-                  initial={{ opacity: 0, height: 0 }}
-                  animate={{ opacity: 1, height: "auto" }}
-                  exit={{ opacity: 0, height: 0 }}
-                  transition={{ duration: 0.3 }}
-                  style={{ marginBottom: "8px" }}
+                  whileHover={{ scale: 1.1 }}
+                  whileTap={{ scale: 0.9 }}
                 >
-                  <SearchBar 
-                    placeholder="Search messages..." 
-                    onSearch={handleSearchMessages}
+                  <IconButton 
+                    onClick={toggleSearchBar}
                     sx={{ 
-                      padding: "0",
-                      "& .MuiOutlinedInput-root": {
-                        backgroundColor: "rgba(255, 255, 255, 0.9)",
+                      color: "white",
+                      backgroundColor: palette.maroon,
+                      boxShadow: "0 3px 10px rgba(0, 0, 0, 0.5)",
+                      padding: "10px",
+                      "&:hover": {
+                        backgroundColor: palette.orange
                       }
                     }}
-                  />
+                  >
+                    <SearchIcon fontSize="medium" />
+                  </IconButton>
                 </motion.div>
-              )}
+              </div>
+            </div>
+            
+            {/* Search bar - simplified implementation with direct visibility based on isSearching state */}
+            {isSearching && (
+              <Box sx={{ mb: 2, mt: 3 }}>
+                <SearchBar 
+                  placeholder="Search messages..." 
+                  onSearch={handleSearchMessages}
+                  sx={{ 
+                    padding: "0",
+                    "& .MuiOutlinedInput-root": {
+                      backgroundColor: "rgba(255, 255, 255, 0.9)",
+                    }
+                  }}
+                />
+              </Box>
+            )}
+            
+            <AnimatePresence mode="sync">
+              {(isSearching ? filteredMessages : allMessages).map((message, index) => (
+                <motion.div
+                  key={message._id || index}
+                  variants={messageItemVariants}
+                  initial="hidden"
+                  animate="visible"
+                  exit={{ opacity: 0, y: -20, transition: { duration: 0.2 } }}
+                >
+                  <EnhancedMessageComponent message={message} user={user} onReply={handleReply} />
+                </motion.div>
+              ))}
             </AnimatePresence>
-           
-           <AnimatePresence mode="sync">
-            {(isSearching ? filteredMessages : allMessages).map((message, index) => (
-              <motion.div
-                key={message._id || index}
-                variants={messageItemVariants}
-                initial="hidden"
-                animate="visible"
-                exit={{ opacity: 0, y: -20, transition: { duration: 0.2 } }}
-              >
-                <EnhancedMessageComponent message={message} user={user} onReply={handleReply} />
-              </motion.div>
-            ))}
-           </AnimatePresence>
             
             {isSearching && filteredMessages.length === 0 && (
-            <Typography 
-              variant="body1" 
-              sx={{ textAlign: 'center', color: palette.cream, mt: 2 }}
-            >
-              No messages matching your search
-            </Typography>
-          )}
+              <Typography 
+                variant="body1" 
+                sx={{ textAlign: 'center', color: palette.cream, mt: 2 }}
+              >
+                No messages matching your search
+              </Typography>
+            )}
 
             <AnimatePresence>
               {userTyping && (
