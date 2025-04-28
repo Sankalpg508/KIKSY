@@ -9,9 +9,7 @@ import {
 import moment from "moment";
 import { transformImage } from "../../lib/features";
 import { motion } from "framer-motion";
-import { bgGradient, grayColor, palette, purpleLight } from "../../constants/color";
-// Define the palette to match the Login component
-
+import { bgGradient, grayColor, palette, purpleLight } from "../../constants/color"
 
 const Profile = ({ user }) => {
   // Animation variants
@@ -139,7 +137,6 @@ const ProfileCard = ({ text, Icon, heading, bgColor = palette.navy }) => {
         alignItems={"center"}
         spacing={"1rem"}
         color={"black"}
-        textAlign={"center"}
         sx={{
           padding: "1rem 1.5rem",
           borderRadius: "12px",
@@ -158,7 +155,7 @@ const ProfileCard = ({ text, Icon, heading, bgColor = palette.navy }) => {
           </motion.div>
         )}
 
-        <Stack>
+        <Stack alignItems="flex-start">
           <Typography variant="body1" fontWeight="medium">
             {text}
           </Typography>
